@@ -26,11 +26,24 @@ SOFTWARE.
 // ============================================================================
 // cuda_ecm64.cu - CUDA kernel implementation (compile with nvcc)
 // ============================================================================
+#if defined(__HIPCC__)
+#include <hip/hip_runtime.h>
+#else
 #include <cuda_runtime.h>
+#endif
 #include <stdint.h>
 
-#ifdef __CUDACC__
+#if defined(__CUDACC__) || defined(__HIPCC__)
 #include "cuda_intrinsics.h"
+#endif
+
+// uecm_stage1 calls uprac() ~100 times in straight-line code.  AMD's compiler
+// inlines each call, which makes the 64-bit kernel enormous and very slow to
+// build, so keep it a real function on HIP.  Empty (no effect) for CUDA.
+#if defined(__HIPCC__)
+#define UPRAC_NOINLINE __attribute__((noinline))
+#else
+#define UPRAC_NOINLINE
 #endif
 
 #ifdef __cplusplus
@@ -114,7 +127,7 @@ extern "C" {
         P->Z = montmul64(tt2, tt3, n, rho);         // Z = w*(V-U)
     }
 
-    __device__ void uprac(uint32_t rho, uint64_t n, uecm_pt* P,
+    __device__ UPRAC_NOINLINE void uprac(uint32_t rho, uint64_t n, uecm_pt* P,
         uint64_t c, double v, uint64_t s)
     {
         // require postive odd c

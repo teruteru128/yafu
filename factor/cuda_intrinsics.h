@@ -27,7 +27,7 @@ Uses source placed in the public domain by Jason Papadopoulos
 for his msieve project
 --------------------------------------------------------------------*/
 
-#if defined(__CUDACC__) && !defined(CUDA_INTRINSICS_H)
+#if (defined(__CUDACC__) || defined(__HIPCC__)) && !defined(CUDA_INTRINSICS_H)
 #define CUDA_INTRINSICS_H
 
 #ifdef __cplusplus
@@ -42,26 +42,77 @@ extern "C"
 
 	/*------------------- Low-level functions ------------------------------*/
 
+#if defined(__HIPCC__)
+	/* ---- portable replacements for the PTX carry-chain asm (AMD GPUs) ----
+	   r = a + b over n 32-bit limbs; returns the carry out (0 or 1) */
+	__device__ __forceinline__ uint32
+		hip_addn(uint32* r, const uint32* a, const uint32* b, int n)
+	{
+		uint32 c = 0;
+		#pragma unroll
+		for (int i = 0; i < n; i++)
+		{
+			uint64 t = (uint64)a[i] + b[i] + c;
+			r[i] = (uint32)t;
+			c = (uint32)(t >> 32);
+		}
+		return c;
+	}
+
+	/* r = a - b over n limbs; returns the borrow out (0 or 1) */
+	__device__ __forceinline__ uint32
+		hip_subn(uint32* r, const uint32* a, const uint32* b, int n)
+	{
+		uint32 br = 0;
+		#pragma unroll
+		for (int i = 0; i < n; i++)
+		{
+			uint64 t = (uint64)a[i] - b[i] - br;
+			r[i] = (uint32)t;
+			br = (uint32)(t >> 32) & 1;
+		}
+		return br;
+	}
+#endif
+
+
 	__device__ void
 		accum3(uint32& a0, uint32& a1, uint32& a2,
 			uint32 b0, uint32 b1) {
 
+		
+#if defined(__HIPCC__)
+		uint64 t = (uint64)a0 + b0; a0 = (uint32)t;
+		t = (uint64)a1 + b1 + (t >> 32); a1 = (uint32)t;
+		a2 += (uint32)(t >> 32);
+#else
 		asm("add.cc.u32 %0, %0, %3;   /* inline */   \n\t"
 			"addc.cc.u32 %1, %1, %4;   /* inline */   \n\t"
 			"addc.u32 %2, %2, %5;   /* inline */   \n\t"
 			: "+r"(a0), "+r"(a1), "+r"(a2)
 			: "r"(b0), "r"(b1), "r"(0));
+#endif
+
 	}
 
 	__device__ void
 		accum3_shift(uint32& a0, uint32& a1, uint32& a2,
 			uint32 b0, uint32 b1) {
 
+		
+#if defined(__HIPCC__)
+		uint64 t = (uint64)a1 + b0; uint32 n0 = (uint32)t;
+		t = (uint64)a2 + b1 + (t >> 32); uint32 n1 = (uint32)t;
+		uint32 n2 = (uint32)(t >> 32);
+		a0 = n0; a1 = n1; a2 = n2;
+#else
 		asm("add.cc.u32 %0, %1, %3;   /* inline */   \n\t"
 			"addc.cc.u32 %1, %2, %4;   /* inline */   \n\t"
 			"addc.u32 %2, %5, %5;   /* inline */   \n\t"
 			: "=r"(a0), "+r"(a1), "+r"(a2)
 			: "r"(b0), "r"(b1), "r"(0));
+#endif
+
 	}
 
 	__device__ void
@@ -69,12 +120,19 @@ extern "C"
 	{
 		uint32 s = c, cs = 0;
 
+		
+#if defined(__HIPCC__)
+		uint64 t = (uint64)s + a; s = (uint32)t; cs = (uint32)(t >> 32);
+		t = (uint64)s + b; s = (uint32)t; cs += (uint32)(t >> 32);
+#else
 		asm("add.cc.u32 %0, %0, %2;   /* inline */   \n\t"
 			"addc.u32 %1, 0, 0;   /* inline */   \n\t"
 			"add.cc.u32 %0, %0, %3;   /* inline */   \n\t"
 			"addc.u32 %1, %1, 0;   /* inline */   \n\t"
 			: "+r"(s), "+r"(cs)
 			: "r"(a), "r"(b));
+#endif
+
 
 		*sum = s;
 		*carry = cs;
@@ -85,10 +143,16 @@ extern "C"
 	__device__ void
 		add2(uint32 a, uint32 b, uint32* sum, uint32* carry)
 	{
+		
+#if defined(__HIPCC__)
+		uint64 t = (uint64)a + b; *sum = (uint32)t; *carry = (uint32)(t >> 32);
+#else
 		asm("add.cc.u32 %0, %2, %3;   /* inline */   \n\t"
 			"addc.u32 %1, 0, 0;   /* inline */   \n\t"
 			: "=r"(*sum), "=r"(*carry)
 			: "r"(a), "r"(b));
+#endif
+
 
 		return;
 	}
@@ -100,12 +164,19 @@ extern "C"
 		// carry = sumcarry + hi
 		uint32 s = c, cs = 0;
 
+		
+#if defined(__HIPCC__)
+		uint64 t = (uint64)s + a; s = (uint32)t; cs = (uint32)(t >> 32);
+		t = (uint64)s + b; s = (uint32)t; cs = cs + hi + (uint32)(t >> 32);
+#else
 		asm("add.cc.u32 %0, %0, %2;   /* inline */   \n\t"
 			"addc.u32 %1, 0, 0;   /* inline */   \n\t"
 			"add.cc.u32 %0, %0, %3;   /* inline */   \n\t"
 			"addc.u32 %1, %1, %4;   /* inline */   \n\t"
 			: "+r"(s), "+r"(cs)
 			: "r"(a), "r"(b), "r"(hi));
+#endif
+
 
 		*sum = s;
 		*carry = cs;
@@ -122,10 +193,16 @@ extern "C"
 
 		uint64 s = 0;
 
+		
+#if defined(__HIPCC__)
+		s = (uint64)a * b + accum + prevhi;
+#else
 		asm("mad.wide.u32 %0, %1, %2, %3;    \n\t"
 			"add.u64 %0, %0, %4;    \n\t"
 			: "+l"(s)
 			: "r"(a), "r"(b), "l"((uint64)accum), "l"((uint64)prevhi));
+#endif
+
 
 		*carry = (uint32)(s >> 32);
 		return (uint32)s;
@@ -134,10 +211,16 @@ extern "C"
 	__device__ void
 		accumlh(uint32 lo, uint32 hi, uint32* t, uint32* carry)
 	{
+		
+#if defined(__HIPCC__)
+		uint64 tt = (uint64)*t + lo; *t = (uint32)tt; *carry = hi + (uint32)(tt >> 32);
+#else
 		asm("add.cc.u32 %0, %0, %2;   /* inline */   \n\t"
 			"addc.u32 %1, %3, 0;   /* inline */   \n\t"
 			: "+r"(*t), "=r"(*carry)
 			: "r"(lo), "r"(hi));
+#endif
+
 
 		return;
 	}
@@ -149,6 +232,10 @@ extern "C"
 	{
 		uint32 a0, a1;
 
+		
+#if defined(__HIPCC__)
+		uint64 p = (uint64)a * a; a0 = (uint32)p; a1 = (uint32)(p >> 32);
+#else
 		asm("{ .reg .u64 %dprod; \n\t"
 			"mul.wide.u32 %dprod, %2, %2; \n\t"
 			"cvt.u32.u64 %0, %dprod;      \n\t"
@@ -157,6 +244,8 @@ extern "C"
 			"}                   \n\t"
 			: "=r"(a0), "=r"(a1)
 			: "r"(a));
+#endif
+
 
 		return (uint64)a1 << 32 | a0;
 	}
@@ -168,6 +257,10 @@ extern "C"
 		// subtract b from a when we know there will be no overflow
 		uint32 r0, r1, r2;
 
+		
+#if defined(__HIPCC__)
+		uint32 d[3]; hip_subn(d, a, b, 3); r0 = d[0]; r1 = d[1]; r2 = d[2];
+#else
 		asm("{  \n\t"
 			"sub.cc.u32 %0, %3, %6;        \n\t"
 			"subc.cc.u32 %1, %4, %7;        \n\t"
@@ -176,6 +269,8 @@ extern "C"
 			: "=r"(r0), "=r"(r1), "=r"(r2)
 			: "r"(a[0]), "r"(a[1]), "r"(a[2]),
 			"r"(b[0]), "r"(b[1]), "r"(b[2]));
+#endif
+
 
 		c[0] = r0;
 		c[1] = r1;
@@ -190,6 +285,10 @@ extern "C"
 		// subtract b from a when we know there will be no overflow
 		uint32 r0, r1, r2;
 
+		
+#if defined(__HIPCC__)
+		uint32 d[3]; hip_subn(d, a, b, 3); r0 = d[0]; r1 = d[1]; r2 = d[2];
+#else
 		asm("{  \n\t"
 			"sub.cc.u32 %0, %3, %6;        \n\t"
 			"subc.cc.u32 %1, %4, %7;        \n\t"
@@ -198,6 +297,8 @@ extern "C"
 			: "=r"(r0), "=r"(r1), "=r"(r2)
 			: "r"(a[0]), "r"(a[1]), "r"(a[2]),
 			"r"(b[0]), "r"(b[1]), "r"(b[2]));
+#endif
+
 
 		c[0] = r0;
 		c[1] = r1;
@@ -212,6 +313,10 @@ extern "C"
 	{
 		uint32 r;
 
+		
+#if defined(__HIPCC__)
+		r = a - b; if (a < b) r += p;
+#else
 		asm("{  \n\t"
 			".reg .pred %pborrow;           \n\t"
 			".reg .u32 %borrow;           \n\t"
@@ -222,6 +327,8 @@ extern "C"
 			"@%pborrow add.u32 %0, %0, %3; \n\t"
 			"} \n\t"
 			: "=r"(r) : "r"(a), "r"(b), "r"(p));
+#endif
+
 
 		return r;
 	}
@@ -237,6 +344,10 @@ extern "C"
 		uint32 p0 = (uint32)p;
 		uint32 p1 = (uint32)(p >> 32);
 
+		
+#if defined(__HIPCC__)
+		uint64 rr = a - b; if (a < b) rr += p; r0 = (uint32)rr; r1 = (uint32)(rr >> 32);
+#else
 		asm("{  \n\t"
 			".reg .pred %pborrow;           \n\t"
 			".reg .u32 %borrow;           \n\t"
@@ -252,6 +363,8 @@ extern "C"
 			: "r"(a0), "r"(a1),
 			"r"(b0), "r"(b1),
 			"r"(p0), "r"(p1));
+#endif
+
 
 		return ((uint64)r1 << 32) | (uint64)r0;
 	}
@@ -261,6 +374,12 @@ extern "C"
 	{
 		uint32 r0, r1, r2;
 
+		
+#if defined(__HIPCC__)
+		uint32 d[3]; uint32 br = hip_subn(d, a, b, 3);
+		if (br) hip_addn(d, d, p, 3);
+		r0 = d[0]; r1 = d[1]; r2 = d[2];
+#else
 		asm("{  \n\t"
 			".reg .pred %pborrow;           \n\t"
 			".reg .u32 %borrow;           \n\t"
@@ -278,6 +397,8 @@ extern "C"
 			: "r"(a[0]), "r"(a[1]), "r"(a[2]),
 			"r"(b[0]), "r"(b[1]), "r"(b[2]),
 			"r"(p[0]), "r"(p[1]), "r"(p[2]));
+#endif
+
 
 		c[0] = r0;
 		c[1] = r1;
@@ -292,6 +413,10 @@ extern "C"
 	{
 		uint32 r;
 
+		
+#if defined(__HIPCC__)
+		r = a + b; if (r < a) r -= p;
+#else
 		asm("{  \n\t"
 			".reg .pred %pcarry;           \n\t"
 			".reg .u32 %carry;           \n\t"
@@ -302,6 +427,8 @@ extern "C"
 			"@%pcarry sub.u32 %0, %0, %3; \n\t"
 			"} \n\t"
 			: "=r"(r) : "r"(a), "r"(b), "r"(p));
+#endif
+
 
 		return r;
 	}
@@ -317,6 +444,13 @@ extern "C"
 		uint32 p0 = (uint32)p;
 		uint32 p1 = (uint32)(p >> 32);
 
+		
+#if defined(__HIPCC__)
+		uint64 sm = a + b; uint32 cy = (sm < a) ? 1u : 0u;
+		uint64 df = sm - p; uint32 sb = (sm < p) ? 1u : 0u;
+		uint64 rr = ((cy - sb) == 0) ? df : sm;
+		r0 = (uint32)rr; r1 = (uint32)(rr >> 32);
+#else
 		asm("{  \n\t"
 			".reg .pred %pborrow;           \n\t"
 			".reg .u32 %borrow;           \n\t"
@@ -336,6 +470,8 @@ extern "C"
 			"} \n\t"
 			: "=r"(r0), "=r"(r1)
 			: "r"(a0), "r"(a1), "r"(b0), "r"(b1), "r"(p0), "r"(p1));
+#endif
+
 
 		return ((uint64)r1 << 32) | r0;
 	}
@@ -345,6 +481,14 @@ extern "C"
 	{
 		uint32 r0, r1, r2;
 
+		
+#if defined(__HIPCC__)
+		uint32 sm[3], df[3];
+		uint32 cy = hip_addn(sm, a, b, 3);
+		uint32 sb = hip_subn(df, sm, p, 3);
+		if ((cy - sb) == 0) { r0 = df[0]; r1 = df[1]; r2 = df[2]; }
+		else { r0 = sm[0]; r1 = sm[1]; r2 = sm[2]; }
+#else
 		asm("{  \n\t"
 			".reg .pred %pborrow;           \n\t"
 			".reg .u32 %borrow;           \n\t"
@@ -370,6 +514,8 @@ extern "C"
 			: "r"(a[0]), "r"(a[1]), "r"(a[2]),
 			"r"(b[0]), "r"(b[1]), "r"(b[2]),
 			"r"(p[0]), "r"(p[1]), "r"(p[2]));
+#endif
+
 
 		c[0] = r0;
 		c[1] = r1;
@@ -385,6 +531,17 @@ extern "C"
 		uint32 s0, s1, s2;
 		uint32 d0, d1, d2;
 
+		
+#if defined(__HIPCC__)
+		uint32 sm[3], df[3], dd[3];
+		uint32 cy = hip_addn(sm, a, b, 3);
+		uint32 bw = hip_subn(dd, a, b, 3);
+		if (bw) hip_addn(dd, dd, p, 3);
+		uint32 sb = hip_subn(df, sm, p, 3);
+		if ((cy - sb) == 0) { sm[0] = df[0]; sm[1] = df[1]; sm[2] = df[2]; }
+		s0 = sm[0]; s1 = sm[1]; s2 = sm[2];
+		d0 = dd[0]; d1 = dd[1]; d2 = dd[2];
+#else
 		asm("{  \n\t"
 			".reg .pred %pborrow;           \n\t"
 			".reg .u32 %borrow;           \n\t"
@@ -419,6 +576,8 @@ extern "C"
 			: "r"(a[0]), "r"(a[1]), "r"(a[2]),
 			"r"(b[0]), "r"(b[1]), "r"(b[2]),
 			"r"(p[0]), "r"(p[1]), "r"(p[2]));
+#endif
+
 
 		s[0] = s0;
 		s[1] = s1;
@@ -453,6 +612,10 @@ extern "C"
 		nn[2] = (uint32)n[1];
 		nn[3] = (uint32)(n[1] >> 32);
 
+		
+#if defined(__HIPCC__)
+		addcarry = hip_addn(aa, aa, bb, 4);
+#else
 		asm("add.cc.u32 %0, %0, %5;        \n\t"
 			"addc.cc.u32 %1, %1, %6; \n\t"
 			"addc.cc.u32 %2, %2, %7; \n\t"
@@ -460,12 +623,18 @@ extern "C"
 			"addc.u32 %4, 0, 0; \n\t"
 			: "+r"(aa[0]), "+r"(aa[1]), "+r"(aa[2]), "+r"(aa[3]), "=r"(addcarry)
 			: "r"(bb[0]), "r"(bb[1]), "r"(bb[2]), "r"(bb[3]));
+#endif
+
 
 		cc[0] = aa[0];
 		cc[1] = aa[1];
 		cc[2] = aa[2];
 		cc[3] = aa[3];
 
+		
+#if defined(__HIPCC__)
+		subborrow = (uint32)0 - hip_subn(aa, aa, nn, 4);
+#else
 		asm("sub.cc.u32 %0, %0, %5;        \n\t"
 			"subc.cc.u32 %1, %1, %6; \n\t"
 			"subc.cc.u32 %2, %2, %7; \n\t"
@@ -473,6 +642,8 @@ extern "C"
 			"subc.u32 %4, 0, 0; \n\t"
 			: "+r"(aa[0]), "+r"(aa[1]), "+r"(aa[2]), "+r"(aa[3]), "=r"(subborrow)
 			: "r"(nn[0]), "r"(nn[1]), "r"(nn[2]), "r"(nn[3]));
+#endif
+
 
 		if ((addcarry == 1) || (subborrow == 0))
 		{
@@ -1013,10 +1184,17 @@ extern "C"
 			//hi = __umulhi(a[0], b[i]);
 			//accumlh(lo, hi, &t[0], &C);
 
-			asm("mad.lo.cc.u32 %0, %2, %3, %0;    \n\t"
+			
+#if defined(__HIPCC__)
+		{ uint64 p = (uint64)a[0] * b[i]; uint64 t0 = (uint64)t[0] + (uint32)p;
+				t[0] = (uint32)t0; C = (uint32)(p >> 32) + (uint32)(t0 >> 32); }
+#else
+		asm("mad.lo.cc.u32 %0, %2, %3, %0;    \n\t"
 				"madc.hi.u32 %1, %2, %3, 0;    \n\t"
 				: "+r"(t[0]), "=r"(C)
 				: "r"(a[0]), "r"(b[i]));
+#endif
+
 
 			for (j = 1; j < 3; j++)
 			{
@@ -1025,10 +1203,16 @@ extern "C"
 				//accum3lh(t[j], lo, C, hi, &t[j], &C);
 				uint64 s = 0;
 
-				asm("mad.wide.u32 %0, %1, %2, %3;    \n\t"
+				
+#if defined(__HIPCC__)
+		s = (uint64)a[j] * b[i] + t[j] + C;
+#else
+		asm("mad.wide.u32 %0, %1, %2, %3;    \n\t"
 					"add.u64 %0, %0, %4;    \n\t"
 					: "+l"(s)
 					: "r"(a[j]), "r"(b[i]), "l"((uint64)t[j]), "l"((uint64)C));
+#endif
+
 
 				C = (uint32)(s >> 32);
 				t[j] = (uint32)s;
@@ -1045,10 +1229,17 @@ extern "C"
 			//
 			//accumlh(lo, hi, &t[0], &C);
 
-			asm("mad.lo.cc.u32 %0, %2, %3, %0;    \n\t"
+			
+#if defined(__HIPCC__)
+		{ uint64 p = (uint64)n[0] * m; uint64 t0 = (uint64)t[0] + (uint32)p;
+				t[0] = (uint32)t0; C = (uint32)(p >> 32) + (uint32)(t0 >> 32); }
+#else
+		asm("mad.lo.cc.u32 %0, %2, %3, %0;    \n\t"
 				"madc.hi.u32 %1, %2, %3, 0;    \n\t"
 				: "+r"(t[0]), "=r"(C)
 				: "r"(n[0]), "r"(m));
+#endif
+
 
 			for (j = 1; j < 3; j++)
 			{
@@ -1057,10 +1248,16 @@ extern "C"
 				//accum3lh(t[j], lo, C, hi, &t[j - 1], &C);
 				uint64 s = 0;
 
-				asm("mad.wide.u32 %0, %1, %2, %3;    \n\t"
+				
+#if defined(__HIPCC__)
+		s = (uint64)n[j] * m + t[j] + C;
+#else
+		asm("mad.wide.u32 %0, %1, %2, %3;    \n\t"
 					"add.u64 %0, %0, %4;    \n\t"
 					: "+l"(s)
 					: "r"(n[j]), "r"(m), "l"((uint64)t[j]), "l"((uint64)C));
+#endif
+
 
 				C = (uint32)(s >> 32);
 				t[j - 1] = (uint32)s;
@@ -1087,12 +1284,18 @@ extern "C"
 
 		uint32_t carry = 0;
 
+		
+#if defined(__HIPCC__)
+		carry = (uint32)0 - hip_subn(t, t, n, 3);
+#else
 		asm("sub.cc.u32 %0, %0, %4;        \n\t"
 			"subc.cc.u32 %1, %1, %5; \n\t"
 			"subc.cc.u32 %2, %2, %6; \n\t"
 			"subc.u32 %3, 0, 0; \n\t"
 			: "+r"(t[0]), "+r"(t[1]), "+r"(t[2]), "=r"(carry)
 			: "r"(n[0]), "r"(n[1]), "r"(n[2]));
+#endif
+
 
 		if (t[3] || ((t[3] == 0) && (carry == 0)))
 		{
@@ -1113,11 +1316,17 @@ extern "C"
 		// AMM: only reduce if result > R
 		if (t[3])
 		{
-			asm("sub.cc.u32 %0, %0, %3;        \n\t"
+			
+#if defined(__HIPCC__)
+		hip_subn(t, t, n, 3);
+#else
+		asm("sub.cc.u32 %0, %0, %3;        \n\t"
 				"subc.cc.u32 %1, %1, %4; \n\t"
 				"subc.u32 %2, %2, %5; \n\t"
 				: "+r"(t[0]), "+r"(t[1]), "+r"(t[2])
 				: "r"(n[0]), "r"(n[1]), "r"(n[2]));
+#endif
+
 
 			c[0] = t[0];
 			c[1] = t[1];
@@ -1156,10 +1365,17 @@ extern "C"
 			//lo = a[i] * a[i];
 			//hi = __umulhi(a[i], a[i]);
 			//accumlh(lo, hi, &t[i], &C);
-			asm("mad.lo.cc.u32 %0, %2, %2, %0;    \n\t"
+			
+#if defined(__HIPCC__)
+		{ uint64 p = (uint64)a[i] * a[i]; uint64 t0 = (uint64)t[i] + (uint32)p;
+				t[i] = (uint32)t0; C = (uint32)(p >> 32) + (uint32)(t0 >> 32); }
+#else
+		asm("mad.lo.cc.u32 %0, %2, %2, %0;    \n\t"
 				"madc.hi.u32 %1, %2, %2, 0;    \n\t"
 				: "+r"(t[i]), "=r"(C)
 				: "r"(a[i]));
+#endif
+
 
 			p = 0;
 			for (j = i + 1; j < 3; j++)
@@ -1181,10 +1397,17 @@ extern "C"
 			add2(t[3], C, &t[3], &C);
 			t[4] = C + p;
 
-			asm("mad.lo.cc.u32 %0, %2, %3, %0;    \n\t"
+			
+#if defined(__HIPCC__)
+		{ uint64 p = (uint64)n[0] * m; uint64 t0 = (uint64)t[0] + (uint32)p;
+				t[0] = (uint32)t0; C = (uint32)(p >> 32) + (uint32)(t0 >> 32); }
+#else
+		asm("mad.lo.cc.u32 %0, %2, %3, %0;    \n\t"
 				"madc.hi.u32 %1, %2, %3, 0;    \n\t"
 				: "+r"(t[0]), "=r"(C)
 				: "r"(n[0]), "r"(m));
+#endif
+
 
 			for (j = 1; j < 3; j++)
 			{
@@ -1193,10 +1416,16 @@ extern "C"
 				//accum3lh(t[j], lo, C, hi, &t[j - 1], &C);
 				uint64 s = 0;
 
-				asm("mad.wide.u32 %0, %1, %2, %3;    \n\t"
+				
+#if defined(__HIPCC__)
+		s = (uint64)n[j] * m + t[j] + C;
+#else
+		asm("mad.wide.u32 %0, %1, %2, %3;    \n\t"
 					"add.u64 %0, %0, %4;    \n\t"
 					: "+l"(s)
 					: "r"(n[j]), "r"(m), "l"((uint64)t[j]), "l"((uint64)C));
+#endif
+
 
 				C = (uint32)(s >> 32);
 				t[j - 1] = (uint32)s;
@@ -1224,12 +1453,18 @@ extern "C"
 
 		uint32_t carry = 0;
 
+		
+#if defined(__HIPCC__)
+		carry = (uint32)0 - hip_subn(t, t, n, 3);
+#else
 		asm("sub.cc.u32 %0, %0, %4;        \n\t"
 			"subc.cc.u32 %1, %1, %5; \n\t"
 			"subc.cc.u32 %2, %2, %6; \n\t"
 			"subc.u32 %3, 0, 0; \n\t"
 			: "+r"(t[0]), "+r"(t[1]), "+r"(t[2]), "=r"(carry)
 			: "r"(n[0]), "r"(n[1]), "r"(n[2]));
+#endif
+
 
 		if (t[3] || ((t[3] == 0) && (carry == 0)))
 		{
@@ -1249,11 +1484,17 @@ extern "C"
 		// AMM: only reduce if result > R
 		if (t[3])
 		{
-			asm("sub.cc.u32 %0, %0, %3;        \n\t"
+			
+#if defined(__HIPCC__)
+		hip_subn(t, t, n, 3);
+#else
+		asm("sub.cc.u32 %0, %0, %3;        \n\t"
 				"subc.cc.u32 %1, %1, %4; \n\t"
 				"subc.u32 %2, %2, %5; \n\t"
 				: "+r"(t[0]), "+r"(t[1]), "+r"(t[2])
 				: "r"(n[0]), "r"(n[1]), "r"(n[2]));
+#endif
+
 
 			c[0] = t[0];
 			c[1] = t[1];
@@ -1331,13 +1572,19 @@ extern "C"
 		// AMM: only reduce if result > R
 		if (t[4])
 		{
-			asm("sub.cc.u32 %0, %0, %5;        \n\t"
+			
+#if defined(__HIPCC__)
+		carry = (uint32)0 - hip_subn(t, t, n, 4);
+#else
+		asm("sub.cc.u32 %0, %0, %5;        \n\t"
 				"subc.cc.u32 %1, %1, %6; \n\t"
 				"subc.cc.u32 %2, %2, %7; \n\t"
 				"subc.cc.u32 %3, %3, %8; \n\t"
 				"subc.u32 %4, 0, 0; \n\t"
 				: "+r"(t[0]), "+r"(t[1]), "+r"(t[2]), "+r"(t[3]), "=r"(carry)
 				: "r"(n[0]), "r"(n[1]), "r"(n[2]), "r"(n[3]));
+#endif
+
 
 			c[0] = t[0];
 			c[1] = t[1];
@@ -1431,13 +1678,19 @@ extern "C"
 		// AMM: only reduce if result > R
 		if (t[4])
 		{
-			asm("sub.cc.u32 %0, %0, %5;        \n\t"
+			
+#if defined(__HIPCC__)
+		carry = (uint32)0 - hip_subn(t, t, n, 4);
+#else
+		asm("sub.cc.u32 %0, %0, %5;        \n\t"
 				"subc.cc.u32 %1, %1, %6; \n\t"
 				"subc.cc.u32 %2, %2, %7; \n\t"
 				"subc.cc.u32 %3, %3, %8; \n\t"
 				"subc.u32 %4, 0, 0; \n\t"
 				: "+r"(t[0]), "+r"(t[1]), "+r"(t[2]), "+r"(t[3]), "=r"(carry)
 				: "r"(n[0]), "r"(n[1]), "r"(n[2]), "r"(n[3]));
+#endif
+
 
 			c[0] = t[0];
 			c[1] = t[1];
@@ -1515,7 +1768,18 @@ extern "C"
 
 		for (i = 0; i < _BIGWORDS; i += 4)
 		{
-			asm("sub.cc.u32 %4, 0, %4;        \n\t"
+			
+#if defined(__HIPCC__)
+		{ uint32 br = (carry != 0) ? 1u : 0u;
+				#pragma unroll
+				for (int k = 0; k < 4; k++)
+				{
+					uint64 d = (uint64)t[i + k] - n[i + k] - br;
+					t[i + k] = (uint32)d; br = (uint32)(d >> 32) & 1;
+				}
+				carry = (uint32)0 - br; }
+#else
+		asm("sub.cc.u32 %4, 0, %4;        \n\t"
 				"subc.cc.u32 %0, %0, %5;        \n\t"
 				"subc.cc.u32 %1, %1, %6; \n\t"
 				"subc.cc.u32 %2, %2, %7; \n\t"
@@ -1523,6 +1787,8 @@ extern "C"
 				"subc.u32 %4, 0, 0; \n\t"
 				: "+r"(t[i + 0]), "+r"(t[i + 1]), "+r"(t[i + 2]), "+r"(t[i + 3]), "+r"(carry)
 				: "r"(n[i + 0]), "r"(n[i + 1]), "r"(n[i + 2]), "r"(n[i + 3]));
+#endif
+
 		}
 
 		// non-balanced code paths, usually bad but this is faster... ?
@@ -1618,7 +1884,18 @@ extern "C"
 
 		for (i = 0; i < _BIGWORDS; i += 4)
 		{
-			asm("sub.cc.u32 %4, 0, %4;        \n\t"
+			
+#if defined(__HIPCC__)
+		{ uint32 br = (carry != 0) ? 1u : 0u;
+				#pragma unroll
+				for (int k = 0; k < 4; k++)
+				{
+					uint64 d = (uint64)t[i + k] - n[i + k] - br;
+					t[i + k] = (uint32)d; br = (uint32)(d >> 32) & 1;
+				}
+				carry = (uint32)0 - br; }
+#else
+		asm("sub.cc.u32 %4, 0, %4;        \n\t"
 				"subc.cc.u32 %0, %0, %5;        \n\t"
 				"subc.cc.u32 %1, %1, %6; \n\t"
 				"subc.cc.u32 %2, %2, %7; \n\t"
@@ -1626,6 +1903,8 @@ extern "C"
 				"subc.u32 %4, 0, 0; \n\t"
 				: "+r"(t[i + 0]), "+r"(t[i + 1]), "+r"(t[i + 2]), "+r"(t[i + 3]), "+r"(carry)
 				: "r"(n[i + 0]), "r"(n[i + 1]), "r"(n[i + 2]), "r"(n[i + 3]));
+#endif
+
 		}
 
 		// AMM: only reduce if result > R
